@@ -18,6 +18,10 @@
 
 #define CAF_SUITE byte
 
+#include <cstddef>
+#include <optional>
+#include <variant>
+
 #include "caf/byte.hpp"
 
 #include "core-test.hpp"
@@ -63,6 +67,9 @@ struct fixture {
 CAF_TEST_FIXTURE_SCOPE(byte_tests, fixture)
 
 CAF_TEST(to integer) {
+  std::byte b;
+  std::optional<int> o;
+  std::variant<int, double> v;
   CAF_CHECK_EQUAL(to_integer<int>("0110'1001"_b), 0x69);
 }
 
