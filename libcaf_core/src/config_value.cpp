@@ -23,6 +23,8 @@
 
 #include "caf/deep_to_string.hpp"
 #include "caf/detail/config_consumer.hpp"
+#include "caf/detail/overload.hpp"
+#include "caf/detail/parse.hpp"
 #include "caf/detail/parser/read_config.hpp"
 #include "caf/detail/type_traits.hpp"
 #include "caf/expected.hpp"
@@ -124,6 +126,65 @@ const char* config_value::type_name() const noexcept {
 
 const char* config_value::type_name_at_index(size_t index) noexcept {
   return type_names[index];
+}
+
+// -- utility for get_as -------------------------------------------------------
+
+expected<config_value::integer> config_value::to_integer() const {
+  using result_type = expected<integer>;
+  auto f = detail::make_overload(
+    [](integer x) { return result_type{x}; },
+    [](boolean) {
+      // Technically, we could convert to integers by mapping to 0 or 1.
+      // However, that is almost never what the user actually meant.
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a boolean to an integer");
+      return result_type{std::move(err)};
+    },
+    [](real x) {
+      using limits = std::numeric_limits<config_value::integer>;
+      if (fmod(x, 1.0) == 0 // only convert whole numbers
+          && x <= config_value::real{limits::max()}
+          && x >= config_value::real{limits::min()}) {
+        return result_type{static_cast<config_value::integer>(x)};
+      } else {
+        auto err = make_error(
+          sec::conversion_failed,
+          "cannot convert decimal or out-of-bounds real number to an integer");
+        return result_type{std::move(err)};
+      }
+    },
+    [](timespan) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a timespan to an integer");
+      return result_type{std::move(err)};
+    },
+    [](const uri&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert an URI to an integer");
+      return result_type{std::move(err)};
+    },
+    [](const std::string& x) {
+      // TODO: since we allow conversion from real, we should also check whether
+      //       we can parse the string as floating point number first and then
+      //       convert that.
+      auto tmp = config_value::integer{0};
+      if (auto err = detail::parse(x, tmp))
+        return result_type{std::move(err)};
+      else
+        return result_type{tmp};
+    },
+    [](const config_value::list&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a list to an integer");
+      return result_type{std::move(err)};
+    },
+    [](const config_value::dictionary&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a dictionary to an integer");
+      return result_type{std::move(err)};
+    });
+  return visit(f, data_);
 }
 
 // -- related free functions ---------------------------------------------------

@@ -23,6 +23,7 @@
 #include "core-test.hpp"
 #include "nasty.hpp"
 
+#include <cmath>
 #include <list>
 #include <map>
 #include <set>
@@ -40,6 +41,10 @@
 #include "caf/pec.hpp"
 #include "caf/string_view.hpp"
 #include "caf/variant.hpp"
+
+#include "caf/detail/bounds_checker.hpp"
+#include "caf/detail/overload.hpp"
+#include "caf/detail/parse.hpp"
 
 using std::string;
 
@@ -82,6 +87,57 @@ config_value cfg_lst(Ts&&... xs) {
 }
 
 } // namespace
+
+CAF_TEST(get_as can convert config values to integers) {
+  CAF_MESSAGE("Given a config value x with value 32,768.");
+  {
+    auto x = config_value{32'768};
+    CAF_MESSAGE("When using get_as with integer types.");
+    {
+      CAF_MESSAGE("Then conversion fails if bounds checks fail.");
+      CAF_CHECK_EQUAL(get_as<uint64_t>(x), 32'768u);
+      CAF_CHECK_EQUAL(get_as<int64_t>(x), 32'768);
+      CAF_CHECK_EQUAL(get_as<uint32_t>(x), 32'768u);
+      CAF_CHECK_EQUAL(get_as<int32_t>(x), 32'768);
+      CAF_CHECK_EQUAL(get_as<uint16_t>(x), 32'768u);
+      CAF_CHECK_EQUAL(get_as<int16_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<uint8_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int8_t>(x), sec::conversion_failed);
+    }
+  }
+  CAF_MESSAGE("Given a config value x with value -5.");
+  {
+    auto x = config_value{-5};
+    CAF_MESSAGE("When using get_as with integer types.");
+    {
+      CAF_MESSAGE("Then conversion fails for all unsigned types.");
+      CAF_CHECK_EQUAL(get_as<uint64_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int64_t>(x), -5);
+      CAF_CHECK_EQUAL(get_as<uint32_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int32_t>(x), -5);
+      CAF_CHECK_EQUAL(get_as<uint16_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int16_t>(x), -5);
+      CAF_CHECK_EQUAL(get_as<uint8_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int8_t>(x), -5);
+    }
+  }
+  CAF_MESSAGE("Given a config value x with value \"50000\".");
+  {
+    auto x = config_value{"50000"s};
+    CAF_MESSAGE("When using get_as with integer types.");
+    {
+      CAF_MESSAGE("Then CAF parses the string and performs a bound check.");
+      CAF_CHECK_EQUAL(get_as<uint64_t>(x), 50'000u);
+      CAF_CHECK_EQUAL(get_as<int64_t>(x), 50'000);
+      CAF_CHECK_EQUAL(get_as<uint32_t>(x), 50'000u);
+      CAF_CHECK_EQUAL(get_as<int32_t>(x), 50'000);
+      CAF_CHECK_EQUAL(get_as<uint16_t>(x), 50'000u);
+      CAF_CHECK_EQUAL(get_as<int16_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<uint8_t>(x), sec::conversion_failed);
+      CAF_CHECK_EQUAL(get_as<int8_t>(x), sec::conversion_failed);
+    }
+  }
+}
 
 CAF_TEST(default_constructed) {
   config_value x;

@@ -36,6 +36,7 @@
 #include "caf/detail/parse.hpp"
 #include "caf/detail/type_traits.hpp"
 #include "caf/dictionary.hpp"
+#include "caf/expected.hpp"
 #include "caf/fwd.hpp"
 #include "caf/inspector_access.hpp"
 #include "caf/optional.hpp"
@@ -51,11 +52,19 @@
 
 namespace caf {
 
+template <class T>
+expected<T> get_as(const config_value& value);
+
 /// A type for config parameters with similar interface to a `variant`. This
 /// type is not implemented as a simple variant alias because variants cannot
 /// contain lists of themselves.
 class CAF_CORE_EXPORT config_value {
 public:
+  // -- friends ----------------------------------------------------------------
+
+  template <class T>
+  friend expected<T> get_as(const config_value& value);
+
   // -- member types -----------------------------------------------------------
 
   using integer = int64_t;
@@ -157,6 +166,10 @@ private:
 
   static const char* type_name_at_index(size_t index) noexcept;
 
+  // -- utility for get_as -----------------------------------------------------
+
+  expected<integer> to_integer() const;
+
   // -- auto conversion of related types ---------------------------------------
 
   void set(bool x) {
@@ -232,6 +245,27 @@ using nested_cli_parsing_t = std::true_type;
 /// Signals parsing of nested config values when used as third argument to
 /// `parse_cli`.
 constexpr auto nested_cli_parsing = nested_cli_parsing_t{};
+
+// -- conversion ---------------------------------------------------------------
+
+/// Converts a @ref config_value to builtin types or user-defined types that
+/// opted into the type inspection API.
+template <class T>
+expected<T> get_as(const config_value& value) {
+  if constexpr (std::is_integral<T>::value) {
+    if (auto result = value.to_integer()) {
+      if (detail::bounds_checker<T>::check(*result))
+        return *result;
+      else
+        return make_error(sec::conversion_failed, "narrowing error");
+    } else {
+      return std::move(result.error());
+    }
+  } else {
+    auto err = make_error(sec::conversion_failed, "not implemented yet");
+    return {std::move(err)};
+  }
+}
 
 // -- SumType-like access ------------------------------------------------------
 
