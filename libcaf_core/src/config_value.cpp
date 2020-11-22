@@ -36,15 +36,9 @@ namespace caf {
 
 namespace {
 
-const char* type_names[] {
-  "integer",
-  "boolean",
-  "real",
-  "timespan",
-  "uri",
-  "string",
-  "list",
-  "dictionary",
+const char* type_names[] = {
+  "none", "integer", "boolean", "real",       "timespan",
+  "uri",  "string",  "list",    "dictionary",
 };
 
 } // namespace
@@ -96,12 +90,16 @@ expected<config_value> config_value::parse(string_view str) {
 // -- properties ---------------------------------------------------------------
 
 void config_value::convert_to_list() {
-  if (holds_alternative<list>(data_))
-    return;
-  using std::swap;
-  config_value tmp;
-  swap(*this, tmp);
-  data_ = std::vector<config_value>{std::move(tmp)};
+  if (holds_alternative<list>(data_)) {
+    ; // nop
+  } else if (holds_alternative<none_t>(data_)) {
+    data_ = config_value::list{};
+  } else {
+    using std::swap;
+    config_value tmp;
+    swap(*this, tmp);
+    data_ = config_value::list{std::move(tmp)};
+  }
 }
 
 config_value::list& config_value::as_list() {
@@ -130,9 +128,69 @@ const char* config_value::type_name_at_index(size_t index) noexcept {
 
 // -- utility for get_as -------------------------------------------------------
 
+expected<bool> config_value::to_boolean() const {
+  using result_type = expected<bool>;
+  auto f = detail::make_overload(
+    [](none_t) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert null to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](integer) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert an integer to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](boolean x) { return result_type{x}; },
+    [](real) {
+      auto err
+        = make_error(sec::conversion_failed,
+                     "cannot convert a floating point number to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](timespan) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a timespan to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](const uri&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert an URI to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](const std::string& x) {
+      if (x == "true") {
+        return result_type{true};
+      } else if (x == "false") {
+        return result_type{false};
+      } else {
+        std::string msg = "cannot convert ";
+        detail::print_escaped(msg, x);
+        msg += " to a boolean";
+        return result_type{make_error(sec::conversion_failed, std::move(msg))};
+      }
+    },
+    [](const config_value::list&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a list to a boolean");
+      return result_type{std::move(err)};
+    },
+    [](const config_value::dictionary&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a dictionary to a boolean");
+      return result_type{std::move(err)};
+    });
+  return visit(f, data_);
+}
+
 expected<config_value::integer> config_value::to_integer() const {
   using result_type = expected<integer>;
   auto f = detail::make_overload(
+    [](none_t) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert null to an integer");
+      return result_type{std::move(err)};
+    },
     [](integer x) { return result_type{x}; },
     [](boolean) {
       // Technically, we could convert to integers by mapping to 0 or 1.
@@ -143,7 +201,8 @@ expected<config_value::integer> config_value::to_integer() const {
     },
     [](real x) {
       using limits = std::numeric_limits<config_value::integer>;
-      if (fmod(x, 1.0) == 0 // only convert whole numbers
+      if (isfinite(x)          // never convert NaN & friends
+          && fmod(x, 1.0) == 0 // only convert whole numbers
           && x <= config_value::real{limits::max()}
           && x >= config_value::real{limits::min()}) {
         return result_type{static_cast<config_value::integer>(x)};
@@ -165,14 +224,17 @@ expected<config_value::integer> config_value::to_integer() const {
       return result_type{std::move(err)};
     },
     [](const std::string& x) {
-      // TODO: since we allow conversion from real, we should also check whether
-      //       we can parse the string as floating point number first and then
-      //       convert that.
-      auto tmp = config_value::integer{0};
-      if (auto err = detail::parse(x, tmp))
-        return result_type{std::move(err)};
-      else
-        return result_type{tmp};
+      auto tmp_int = config_value::integer{0};
+      if (detail::parse(x, tmp_int) == none)
+        return result_type{tmp_int};
+      auto tmp_real = 0.0;
+      if (detail::parse(x, tmp_real) == none)
+        if (auto ival = config_value{tmp_real}.to_integer())
+          return result_type{*ival};
+      std::string msg = "cannot convert ";
+      detail::print_escaped(msg, x);
+      msg += " to an integer";
+      return result_type{make_error(sec::conversion_failed, std::move(msg))};
     },
     [](const config_value::list&) {
       auto err = make_error(sec::conversion_failed,
@@ -182,6 +244,63 @@ expected<config_value::integer> config_value::to_integer() const {
     [](const config_value::dictionary&) {
       auto err = make_error(sec::conversion_failed,
                             "cannot convert a dictionary to an integer");
+      return result_type{std::move(err)};
+    });
+  return visit(f, data_);
+}
+
+expected<config_value::real> config_value::to_real() const {
+  using result_type = expected<real>;
+  auto f = detail::make_overload(
+    [](none_t) {
+      // Technically, we could use NaN here. However, that would most likely
+      // result in unpleasant surprises and unexpected results.
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert null to a floating point number");
+      return result_type{std::move(err)};
+    },
+    [](integer x) {
+      // This cast may lose precision on the value. We could try and check that,
+      // but refusing to convert on loss of precision could also be unexpected
+      // behavior. So we rather always convert, even if it costs precision.
+      return result_type{static_cast<real>(x)};
+    },
+    [](boolean) {
+      auto err
+        = make_error(sec::conversion_failed,
+                     "cannot convert a boolean to a floating point number");
+      return result_type{std::move(err)};
+    },
+    [](real x) { return result_type{x}; },
+    [](timespan) {
+      auto err
+        = make_error(sec::conversion_failed,
+                     "cannot convert a timespan to a floating point number");
+      return result_type{std::move(err)};
+    },
+    [](const uri&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert an URI to a floating point number");
+      return result_type{std::move(err)};
+    },
+    [](const std::string& x) {
+      auto tmp = 0.0;
+      if (detail::parse(x, tmp) == none)
+        return result_type{tmp};
+      std::string msg = "cannot convert ";
+      detail::print_escaped(msg, x);
+      msg += " to a floating point number";
+      return result_type{make_error(sec::conversion_failed, std::move(msg))};
+    },
+    [](const config_value::list&) {
+      auto err = make_error(sec::conversion_failed,
+                            "cannot convert a list to a floating point number");
+      return result_type{std::move(err)};
+    },
+    [](const config_value::dictionary&) {
+      auto err
+        = make_error(sec::conversion_failed,
+                     "cannot convert a dictionary to a floating point number");
       return result_type{std::move(err)};
     });
   return visit(f, data_);
@@ -208,6 +327,10 @@ struct to_string_visitor {
   void operator()(const T& x) {
     detail::stringification_inspector f{str};
     f.value(x);
+  }
+
+  void operator()(none_t) {
+    str += "null";
   }
 
   void operator()(const uri& x) {

@@ -19,6 +19,8 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iosfwd>
 #include <iterator>
@@ -81,8 +83,8 @@ public:
 
   using dictionary = caf::dictionary<config_value>;
 
-  using types = detail::type_list<integer, boolean, real, timespan, uri, string,
-                                  list, dictionary>;
+  using types = detail::type_list<none_t, integer, boolean, real, timespan, uri,
+                                  string, list, dictionary>;
 
   using variant_type = detail::tl_apply_t<types, variant>;
 
@@ -124,8 +126,8 @@ public:
 
   // -- properties -------------------------------------------------------------
 
-  /// Converts the value to a list with one element. Does nothing if the value
-  /// already is a list.
+  /// Converts the value to a list with one element (unless the config value
+  /// holds `nullptr`). Does nothing if the value already is a list.
   void convert_to_list();
 
   /// Returns the value as a list, converting it to one if needed.
@@ -168,9 +170,17 @@ private:
 
   // -- utility for get_as -----------------------------------------------------
 
+  expected<bool> to_boolean() const;
+
   expected<integer> to_integer() const;
 
+  expected<real> to_real() const;
+
   // -- auto conversion of related types ---------------------------------------
+
+  void set(none_t) {
+    data_ = none;
+  }
 
   void set(bool x) {
     data_ = x;
@@ -252,12 +262,33 @@ constexpr auto nested_cli_parsing = nested_cli_parsing_t{};
 /// opted into the type inspection API.
 template <class T>
 expected<T> get_as(const config_value& value) {
-  if constexpr (std::is_integral<T>::value) {
+  if constexpr (std::is_same<T, bool>::value) {
+    if (auto result = value.to_boolean()) {
+      return *result;
+    } else {
+      return std::move(result.error());
+    }
+  } else if constexpr (std::is_integral<T>::value) {
     if (auto result = value.to_integer()) {
       if (detail::bounds_checker<T>::check(*result))
         return *result;
       else
         return make_error(sec::conversion_failed, "narrowing error");
+    } else {
+      return std::move(result.error());
+    }
+  } else if constexpr (std::is_floating_point<T>::value) {
+    if (auto result = value.to_real()) {
+      if constexpr (sizeof(T) >= sizeof(config_value::real)) {
+        return *result;
+      } else {
+        auto narrowed = static_cast<T>(*result);
+        if (!std::isfinite(*result) || std::isfinite(narrowed)) {
+          return narrowed;
+        } else {
+          return make_error(sec::conversion_failed, "narrowing error");
+        }
+      }
     } else {
       return std::move(result.error());
     }
@@ -935,6 +966,26 @@ struct sum_type_access<config_value> {
 };
 
 /// @relates config_value
+inline bool operator==(const config_value& x, std::nullptr_t) noexcept {
+  return x.get_data().index() == 0;
+}
+
+/// @relates config_value
+inline bool operator==(std::nullptr_t, const config_value& x) noexcept {
+  return x.get_data().index() == 0;
+}
+
+/// @relates config_value
+inline bool operator!=(const config_value& x, std::nullptr_t) noexcept {
+  return x.get_data().index() != 0;
+}
+
+/// @relates config_value
+inline bool operator!=(std::nullptr_t, const config_value& x) noexcept {
+  return x.get_data().index() != 0;
+}
+
+/// @relates config_value
 CAF_CORE_EXPORT bool operator<(const config_value& x, const config_value& y);
 
 /// @relates config_value
@@ -1032,6 +1083,7 @@ struct variant_inspector_traits<config_value> {
   using value_type = config_value;
 
   static constexpr type_id_t allowed_types[] = {
+    type_id_v<none_t>,
     type_id_v<config_value::integer>,
     type_id_v<config_value::boolean>,
     type_id_v<config_value::real>,
@@ -1053,7 +1105,7 @@ struct variant_inspector_traits<config_value> {
 
   template <class U>
   static void assign(value_type& x, U&& value) {
-    x.get_data() = std::move(value);
+    x = std::move(value);
   }
 
   template <class F>
@@ -1061,6 +1113,11 @@ struct variant_inspector_traits<config_value> {
     switch (type) {
       default:
         return false;
+      case type_id_v<none_t>: {
+        auto tmp = config_value{};
+        continuation(tmp);
+        return true;
+      }
       case type_id_v<config_value::integer>: {
         auto tmp = config_value::integer{};
         continuation(tmp);
