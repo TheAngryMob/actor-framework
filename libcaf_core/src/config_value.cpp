@@ -19,6 +19,7 @@
 
 #include "caf/config_value.hpp"
 
+#include <cmath>
 #include <ostream>
 
 #include "caf/deep_to_string.hpp"
@@ -201,8 +202,8 @@ expected<config_value::integer> config_value::to_integer() const {
     },
     [](real x) {
       using limits = std::numeric_limits<config_value::integer>;
-      if (isfinite(x)          // never convert NaN & friends
-          && fmod(x, 1.0) == 0 // only convert whole numbers
+      if (std::isfinite(x)            // never convert NaN & friends
+          && std::fmod(x, 1.0) == 0.0 // only convert whole numbers
           && x <= config_value::real{limits::max()}
           && x >= config_value::real{limits::min()}) {
         return result_type{static_cast<config_value::integer>(x)};
